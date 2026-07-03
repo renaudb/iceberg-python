@@ -2520,19 +2520,6 @@ def parquet_path_to_id_mapping(
     return result
 
 
-def id_to_parquet_path_mapping(schema: Schema) -> dict[int, str]:
-    """
-    Compute the mapping of Iceberg column ID to parquet column path.
-
-    Args:
-        schema (pyiceberg.schema.Schema): The current table schema.
-    """
-    result: dict[int, str] = {}
-    for pair in pre_order_visit(schema, ID2ParquetPathVisitor()):
-        result[pair.field_id] = pair.parquet_path
-    return result
-
-
 @dataclass(frozen=True)
 class BloomFilterOptions:
     parquet_path: str
@@ -2614,6 +2601,7 @@ class BloomFilterOptionsCollector(PreOrderSchemaVisitor[list[BloomFilterOptions]
 def get_bloom_filter_options(
     schema: Schema,
     table_properties: dict[str, str],
+    id_to_parquet_path: dict[int, str],
 ) -> dict[str, dict[str, Any]]:
     """
     Get the bloom filter options from the table properties.
@@ -2621,10 +2609,9 @@ def get_bloom_filter_options(
     Args:
         schema (pyiceberg.schema.Schema): The current table schema.
         table_properties (dict[str, str]): The table properties.
+        id_to_parquet_path (Dict[int, str]): The mapping of the field ID to the parquet file name.
     """
-    bloom_filter_options = pre_order_visit(
-        schema, BloomFilterOptionsCollector(schema, table_properties, id_to_parquet_path_mapping(schema))
-    )
+    bloom_filter_options = pre_order_visit(schema, BloomFilterOptionsCollector(schema, table_properties, id_to_parquet_path))
     result: dict[str, dict[str, Any]] = {}
     for bf_opts in bloom_filter_options:
         result[bf_opts.parquet_path] = {
@@ -2845,7 +2832,8 @@ def write_file(io: FileIO, table_metadata: TableMetadata, tasks: Iterator[WriteT
         else:
             file_schema = table_schema
 
-        parquet_writer_kwargs = _get_parquet_writer_kwargs(table_metadata.properties, file_schema)
+        parquet_column_mapping = parquet_path_to_id_mapping(file_schema)
+        parquet_writer_kwargs = _get_parquet_writer_kwargs(table_metadata.properties, file_schema, parquet_column_mapping)
 
         downcast_ns_timestamp_to_us = Config().get_bool(DOWNCAST_NS_TIMESTAMP_TO_US_ON_WRITE) or False
         batches = [
@@ -3032,7 +3020,9 @@ ICEBERG_UNCOMPRESSED_CODEC = "uncompressed"
 PYARROW_UNCOMPRESSED_CODEC = "none"
 
 
-def _get_parquet_writer_kwargs(table_properties: Properties, file_schema: Schema) -> dict[str, Any]:
+def _get_parquet_writer_kwargs(
+    table_properties: Properties, file_schema: Schema, parquet_column_mapping: dict[str, int]
+) -> dict[str, Any]:
     from pyiceberg.table import TableProperties
 
     unsupported_key_patterns = [
@@ -3063,7 +3053,8 @@ def _get_parquet_writer_kwargs(table_properties: Properties, file_schema: Schema
     if compression_codec == ICEBERG_UNCOMPRESSED_CODEC:
         compression_codec = PYARROW_UNCOMPRESSED_CODEC
 
-    bloom_filter_options = get_bloom_filter_options(file_schema, table_properties)
+    id_to_parquet_path = {field_id: parquet_path for parquet_path, field_id in parquet_column_mapping.items()}
+    bloom_filter_options = get_bloom_filter_options(file_schema, table_properties, id_to_parquet_path)
 
     return {
         "compression": compression_codec,
