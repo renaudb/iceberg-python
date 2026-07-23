@@ -2749,7 +2749,8 @@ class ParquetFormatWriter(FileFormatWriter):
         self._properties = properties
         self._writer: pq.ParquetWriter | None = None
         self._fos: OutputStream | None = None
-        self._parquet_writer_kwargs = _get_parquet_writer_kwargs(properties)
+        self._parquet_column_mapping = parquet_path_to_id_mapping(file_schema)
+        self._parquet_writer_kwargs = _get_parquet_writer_kwargs(properties, file_schema, self._parquet_column_mapping)
         self._row_group_size = property_as_int(
             properties=properties,
             property_name=TableProperties.PARQUET_ROW_GROUP_LIMIT,
@@ -2782,7 +2783,7 @@ class ParquetFormatWriter(FileFormatWriter):
             self._result = data_file_statistics_from_parquet_metadata(
                 parquet_metadata=self._writer.writer.metadata,
                 stats_columns=compute_statistics_plan(self._file_schema, self._properties),
-                parquet_column_mapping=parquet_path_to_id_mapping(self._file_schema),
+                parquet_column_mapping=self._parquet_column_mapping,
             )
         return self._result
 
@@ -2831,9 +2832,6 @@ def write_file(io: FileIO, table_metadata: TableMetadata, tasks: Iterator[WriteT
             file_schema = sanitized_schema
         else:
             file_schema = table_schema
-
-        parquet_column_mapping = parquet_path_to_id_mapping(file_schema)
-        parquet_writer_kwargs = _get_parquet_writer_kwargs(table_metadata.properties, file_schema, parquet_column_mapping)
 
         downcast_ns_timestamp_to_us = Config().get_bool(DOWNCAST_NS_TIMESTAMP_TO_US_ON_WRITE) or False
         batches = [
